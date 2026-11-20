@@ -1,0 +1,186 @@
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.24;
+
+interface IERC20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+    function balanceOf(address account) external view returns (uint256);
+}
+
+contract HYPEStaking {
+
+    IERC20 public immutable stakingToken;
+
+    address public owner;
+
+    uint256 public totalStaked;
+    uint256 public rewardRate; // WHYPE per second
+
+    uint256 public rewardPerTokenStored;
+    uint256 public lastUpdateTime;
+
+    mapping(address => uint256) public balances;
+    mapping(address => uint256) public rewards;
+    mapping(address => uint256) public userRewardPerTokenPaid;
+
+    uint256 constant PRECISION = 1e18;
+
+    event Staked(address indexed user, uint256 amount);
+    event Unstaked(address indexed user, uint256 amount);
+    event RewardPaid(address indexed user, uint256 amount);
+    event RewardFunded(uint256 amount);
+
+    modifier onlyOwner() {
+        require(msg.sender == owner, "Not owner");
+        _;
+    }
+
+    modifier updateReward(address account) {
+        if (totalStaked > 0) {
+            rewardPerTokenStored +=
+                (block.timestamp - lastUpdateTime)
+                * rewardRate * PRECISION / totalStaked;
+        }
+
+        lastUpdateTime = block.timestamp;
+
+        if (account != address(0)) {
+            rewards[account] +=
+                balances[account] *
+                (rewardPerTokenStored - userRewardPerTokenPaid[account])
+                / PRECISION;
+
+            userRewardPerTokenPaid[account] = rewardPerTokenStored;
+        }
+        _;
+    }
+
+    constructor() {
+        owner = msg.sender;
+
+        stakingToken = IERC20(
+            0xba876237b0f021a6c6d852d6c26e107997cc5e81
+        );
+
+        lastUpdateTime = block.timestamp;
+    }
+
+    // Stake WHYPE
+    function stake(uint256 amount)
+        external
+        updateReward(msg.sender)
+    {
+        require(amount > 0, "Zero amount");
+
+        require(
+            stakingToken.transferFrom(
+                msg.sender,
+                address(this),
+                amount
+            ),
+            "Transfer failed"
+        );
+
+        balances[msg.sender] += amount;
+        totalStaked += amount;
+
+        emit Staked(msg.sender, amount);
+    }
+
+    // Withdraw staked WHYPE
+    function unstake(uint256 amount)
+        external
+        updateReward(msg.sender)
+    {
+        require(amount > 0, "Zero amount");
+        require(balances[msg.sender] >= amount, "Insufficient stake");
+
+        balances[msg.sender] -= amount;
+        totalStaked -= amount;
+
+        require(
+            stakingToken.transfer(msg.sender, amount),
+            "Transfer failed"
+        );
+
+        emit Unstaked(msg.sender, amount);
+    }
+
+    // Claim staking rewards
+    function claimReward()
+        external
+        updateReward(msg.sender)
+    {
+        uint256 reward = rewards[msg.sender];
+
+        require(reward > 0, "No rewards");
+
+        require(
+            stakingToken.balanceOf(address(this)) - totalStaked >= reward,
+            "Insufficient reward pool"
+        );
+
+        rewards[msg.sender] = 0;
+
+        require(
+            stakingToken.transfer(msg.sender, reward),
+            "Reward transfer failed"
+        );
+
+        emit RewardPaid(msg.sender, reward);
+    }
+
+    // Owner funds the reward pool
+    function fundRewards(uint256 amount)
+        external
+        onlyOwner
+        updateReward(address(0))
+    {
+        require(amount > 0, "Zero amount");
+
+        require(
+            stakingToken.transferFrom(msg.sender, address(this), amount),
+            "Funding failed"
+        );
+
+        emit RewardFunded(amount);
+    }
+
+    // Set reward emission in WHYPE wei per second
+    function setRewardRate(uint256 newRate)
+        external
+        onlyOwner
+        updateReward(address(0))
+    {
+        rewardRate = newRate;
+    }
+
+    // Check pending rewards
+    function earned(address account)
+        external
+        view
+        returns (uint256)
+    {
+        uint256 currentRewardPerToken = rewardPerTokenStored;
+
+        if (totalStaked > 0) {
+            currentRewardPerToken +=
+                (block.timestamp - lastUpdateTime)
+                * rewardRate * PRECISION / totalStaked;
+        }
+
+        return balances[account] *
+            (currentRewardPerToken - userRewardPerTokenPaid[account])
+            / PRECISION + rewards[account];
+    }
+
+    // Change owner
+    function transferOwnership(address newOwner)
+        external
+        onlyOwner
+    {
+        require(newOwner != address(0), "Invalid owner");
+        owner = newOwner;
+    }
+}
